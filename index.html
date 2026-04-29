@@ -1606,8 +1606,8 @@ function showLocalChurchEvent(ev){
   document.getElementById('m-txt').textContent=data.txt;
   const ref=document.getElementById('m-ref');ref.style.display='none';
   const mc=document.getElementById('m-choices');mc.innerHTML='';
-  const active=document.createElement('button');active.className='mcbtn';active.textContent=data.a+' (15 Fé + 8 Ofertas)';active.disabled=G.fe<15||G.of<8;
-  active.onclick=()=>{G.fe-=15;G.of-=8;ch.localGrowthMod=(ev.kind==='strain'||ev.kind==='conflict')?0.18:0.55;ch.localGrowthUntil=G.year+2;if(ev.kind==='heritage'||ev.kind==='openDoor')ch.members+=randInt(2,6);closeDecisionModal('A comunidade foi acompanhada. O efeito local dura alguns anos.');};
+  const active=document.createElement('button');active.className='mcbtn';active.textContent=data.a+' (15 Fé)';active.disabled=G.fe<15;
+  active.onclick=()=>{G.fe-=15;ch.localGrowthMod=(ev.kind==='strain'||ev.kind==='conflict')?0.18:0.55;ch.localGrowthUntil=G.year+2;if(ev.kind==='heritage'||ev.kind==='openDoor')ch.members+=randInt(2,6);closeDecisionModal('A comunidade foi acompanhada. O efeito local dura alguns anos.');};
   mc.appendChild(active);
   const passive=document.createElement('button');passive.className='mcbtn';passive.textContent=data.b;
   passive.onclick=()=>{ch.localGrowthMod=(ev.kind==='strain'||ev.kind==='conflict')?-0.45:(ev.kind==='migration'?0.05:0.18);ch.localGrowthUntil=G.year+1;closeDecisionModal('A decisão foi registrada. O campo seguirá seu curso por um tempo.');};
