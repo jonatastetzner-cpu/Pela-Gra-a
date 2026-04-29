@@ -484,7 +484,7 @@ const BASE_SUPPORT=0.42;
 const EARLY_MISSION_SUPPORT=0.35;
 const STATE_STRUCTURE_UPKEEP=0.25;
 const ADMIN_OVERLOAD_UPKEEP=0.45;
-const PASTOR_SEND_COST=90;
+const PASTOR_SEND_COST=40;
 const PLAYER_EXPANSION_COST=40;
 const SEMINARY_MONTHLY_COST=0.5;
 const SEMINARY_SUBSIDY_PER_STUDENT=0.15;
@@ -563,7 +563,7 @@ function addChurch(stateId, denom, members=8, level=1, foundedYear=G.year){
   const cityPool=(STATE_CITIES[stateId]||[STATES[stateId].name]);
   const city=arguments[6]||cityPool.find(c=>!usedCities.includes(c))||STATES[stateId].name;
   const type=arguments[5]||'congregacao';
-  const church={denom,members,level,foundedYear,foundingChurch:slot.churches.length===0,pastorId:null,secondPastorId:null,struggleMonths:0,struggling:false,subsidized:false,solventMonths:0,overloadSince:null,offerRate:0.5+Math.random()*0.4,city,type};
+  const church={denom,members,level,foundedYear,foundingChurch:slot.churches.length===0,pastorId:null,secondPastorId:null,struggleMonths:0,struggling:false,subsidized:false,solventMonths:0,overloadSince:null,offerRate:0.5+Math.random()*0.4,city,type,organicBias:(Math.random()-0.5)*0.05,organicPulse:(Math.random()-0.5)*0.06};
   slot.churches.push(church);
   syncDenomMembers(stateId,denom);
   return church;
@@ -678,9 +678,40 @@ function recalcInfluence(){
 
 function pastoralFinanceMult(){return Math.max(0.85,Math.min(1.75,G.mods.pastoralFormation));}
 
+function churchOrganicMemberRate(stateId,index){
+  const ch=G.states[stateId].denomData.IELB.churches[index];
+  if(!ch)return 0;
+  if(ch.organicBias===undefined)ch.organicBias=(Math.random()-0.5)*0.05;
+  if(ch.organicPulse===undefined)ch.organicPulse=(Math.random()-0.5)*0.06;
+  const pastoral=pastoralStatus(stateId,index);
+  const state=G.states[stateId];
+  const base=ch.type==='missao'?0.035+(ch.level-1)*0.018:0.03;
+  const doctrine=(G.doc-75)*0.002;
+  const receptivity=((state.modifiers&&state.modifiers.receptivity)||1)-1;
+  const pastorMod=(pastoral.memberMult-0.85)*0.08;
+  const missionMod=(G.mods.missionGrowth-1)*0.05;
+  const youthMod=(G.mods.youthRetention-1)*0.04;
+  const overloadPenalty=(ch.members>=300&&!ch.secondPastorId)?0.08:0;
+  const noPastorPenalty=!pastorForChurch(stateId,index)?0.08:0;
+  const rate=base+doctrine+receptivity*0.05+pastorMod+missionMod+youthMod+(ch.organicBias||0)+(ch.organicPulse||0)-overloadPenalty-noPastorPenalty;
+  return Math.max(-0.12,Math.min(0.22,rate));
+}
+function totalOrganicMemberRate(){
+  return ALL_STATES.reduce((sum,id)=>sum+G.states[id].denomData.IELB.churches.reduce((a,_,i)=>a+churchOrganicMemberRate(id,i),0),0);
+}
+function applyOrganicMemberGrowth(dt){
+  ALL_STATES.forEach(id=>{
+    let changed=false;
+    G.states[id].denomData.IELB.churches.forEach((ch,i)=>{
+      const gain=churchOrganicMemberRate(id,i)*dt;
+      if(gain!==0){ch.members=Math.max(1,ch.members+gain);changed=true;}
+    });
+    if(changed)syncDenomMembers(id,'IELB');
+  });
+}
 function recalc(){
   recalcInfluence();
-  let fe=0.3,of=0,fi=0.01;
+  let fe=0.3,of=0,fi=0;
   let expense=0;
   ALL_STATES.forEach(id=>{
     const mul=STATE_MULTI[id]||{fe:1,of:1};
@@ -690,7 +721,7 @@ function recalc(){
       const memberRoot=Math.sqrt(Math.max(0,c.members));
       const levelGain=1+(c.level-1)*0.22;
       fe+=memberRoot*FAITH_ROOT_GAIN*levelGain*mul.fe*scale*pastoral.memberMult*G.mods.doctrineGrowth/Math.max(0.85,G.mods.persecutionPressure);
-      fi+=c.members*0.0012*scale*pastoral.memberMult*G.mods.youthRetention;
+      fi+=churchOrganicMemberRate(id,i);
       const bal=churchInternalBalance(id,i);
       of+=Math.max(0,bal.net);
       if(c.subsidized)expense+=bal.deficit;
@@ -702,7 +733,7 @@ function recalc(){
     expense+=activeSub*SEMINARY_SUBSIDY_PER_STUDENT;
   }
   G.monthlyExpense=expense;
-  G.rateFe=fe*G.rateMult*ECONOMY_SCALE;G.rateOf=(of*pastoralFinanceMult())-expense;G.rateFi=fi*G.rateMult*ECONOMY_SCALE;
+  G.rateFe=fe*G.rateMult*ECONOMY_SCALE;G.rateOf=(of*pastoralFinanceMult())-expense;G.rateFi=fi*G.rateMult;
 }
 
 function monthlyRivalOrganicGrowth(){
@@ -794,14 +825,9 @@ function processPlayerMonthlyChurches(){
       ch._lastDeficit=bal.deficit;
       if(bal.deficit>0.01){ch.struggleMonths=(ch.struggleMonths||0)+1;if(ch.struggleMonths===3)setTick('Congregação em '+STATES[id].name+' com dificuldades financeiras.');}
       else {ch.struggleMonths=0;if(ch.subsidized){ch.solventMonths=(ch.solventMonths||0)+1;if(ch.solventMonths>=2){ch.subsidized=false;setTick('Congregação em '+STATES[id].name+' voltou ao auto-sustento.');}} ch.struggling=false;}
-      const beforeMembers=Math.floor(ch.members);
-      const missionGrowthBoost=ch.type==='missao'?(0.65+(ch.level-1)*0.28):1;
-      const base=ch.level*0.003*G.mods.youthRetention*missionGrowthBoost;
-      const docMod=(G.doc/100-0.6)*0.5;
-      const growthFactor=(bal.pastoral.memberMult-0.5)+docMod+(Math.random()-0.35)*0.8;
-      ch.members+=base*growthFactor;
+      ch.organicPulse=(Math.random()-0.5)*0.08;
       const afterMembers=Math.floor(ch.members);
-      if(ch._lastMemberFloor===undefined)ch._lastMemberFloor=beforeMembers;
+      if(ch._lastMemberFloor===undefined)ch._lastMemberFloor=afterMembers;
       if(afterMembers>ch._lastMemberFloor){ch.stagnantMonths=0;ch._lastMemberFloor=afterMembers;}
       else ch.stagnantMonths=(ch.stagnantMonths||0)+1;
       const rateTarget=(bal.pastoral.memberMult*0.6)*(0.5+G.doc/200);
@@ -1247,12 +1273,42 @@ function promoteMissionToChurch(id,index,wasPaused){
   closeMissionCityModal(wasPaused);
 }
 function culto(){if(generalActionBlocked())return;G.fe=Math.min(G.fe+4,9999);setTick('Culto realizado.');updateRes();renderRight();}
-function catecismo(){if(generalActionBlocked())return;if(G.fe<25){setTick('Fé insuficiente.');return;}G.fe-=25;G.fi=Math.min(G.fi+5,9999);const targets=ALL_STATES.filter(id=>churchCount(id,'IELB')>0);if(targets.length){const id=targets[Math.floor(Math.random()*targets.length)];const cs=G.states[id].denomData.IELB.churches;cs[Math.floor(Math.random()*cs.length)].members+=5;}recalc();setTick('Catecismo concluído!');updateRes();renderLeft();renderRight();redrawDots();}
+function ielbChurchRefs(){
+  const refs=[];
+  ALL_STATES.forEach(id=>G.states[id].denomData.IELB.churches.forEach((ch,index)=>refs.push({id,index,ch})));
+  return refs;
+}
+function addMembersToIelbChurches(amount,preferStateId=null){
+  const refs=ielbChurchRefs();
+  if(!refs.length||amount<=0)return null;
+  const pool=preferStateId?refs.filter(r=>r.id===preferStateId):refs;
+  const chosenPool=pool.length?pool:refs;
+  const share=amount/chosenPool.length;
+  let last=null;
+  chosenPool.forEach(r=>{
+    r.ch.members+=share;
+    r.ch.stagnantMonths=0;
+    r.ch._lastMemberFloor=Math.floor(r.ch.members);
+    syncDenomMembers(r.id,'IELB');
+    last=r;
+  });
+  return last;
+}
+function catecismo(){
+  if(generalActionBlocked())return;
+  if(G.fe<25){setTick('Fé insuficiente.');return;}
+  G.fe-=25;
+  G.fi=Math.min(G.fi+5,9999);
+  addMembersToIelbChurches(5,G.sel!=='BR'?G.sel:null);
+  recalc();
+  setTick('Catecismo concluído: +5 membros integrados às comunidades.');
+  updateRes();renderLeft();renderRight();redrawDots();
+}
 function assignAvailablePastorAction(id,i,second=false){const p=availablePastor();if(!p||G.of<PASTOR_SEND_COST)return;G.of-=PASTOR_SEND_COST;const ch=G.states[id].denomData.IELB.churches[i];if(second&&ch.pastorId){removeAvailablePastor(p.id);p.assignedStateId=id;p.assignedChurchIndex=i;p.isOnRoute=false;p.routeChurchIndex=null;ch.secondPastorId=p.id;G.pastors.forEach(x=>{if(x.assignedStateId===id&&x.routeChurchIndex===i){x.isOnRoute=false;x.routeChurchIndex=null;}});ch.overloadSince=null;}else assignPastorToChurch(p,id,i);recalc();renderLeft();renderRight();updateRes();setTick('Pastor '+p.name+' enviado para a Igreja '+(i+1)+' em '+STATES[id].name+'.');}
 function levelPlayerPoint(id,i){
   const ch=G.states[id].denomData.IELB.churches[i];
   if(!ch||ch.level>=5)return;
-  const cost=ch.type==='missao'?Math.round(ch.level*28):Math.round(ch.level*55);
+  const cost=ch.type==='missao'?PLAYER_EXPANSION_COST:Math.round(ch.level*55);
   if(G.of<cost)return;
   G.of-=cost;
   ch.level++;
@@ -1310,7 +1366,7 @@ function renderRight(){
         +(c.struggleMonths>=3?'<span style="font-size:11px;color:#c62828">Dificuldade há '+c.struggleMonths+' meses</span>':'');
       body.appendChild(row);
       if(!pastorForChurch(id,i)&&G.availablePastors.length)addBtn(body,'Enviar pastor — '+(c.city||'Igreja '+(i+1)),'Custo: '+PASTOR_SEND_COST+' Ofertas','miss',()=>assignAvailablePastorAction(id,i),G.of<PASTOR_SEND_COST);
-      if(c.type==='missao'&&c.level<5){const levelCost=Math.round(c.level*28);addBtn(body,'Elevar nível da missão — '+(c.city||'Ponto '+(i+1)),'Nível '+c.level+' → '+(c.level+1)+' | Custo: '+levelCost+' Ofertas','miss',()=>levelPlayerPoint(id,i),G.of<levelCost);}
+      if(c.type==='missao'&&c.level<5){const levelCost=PLAYER_EXPANSION_COST;addBtn(body,'Desenvolver missão — '+(c.city||'Ponto '+(i+1)),'Nível '+c.level+' → '+(c.level+1)+' | Custo: '+levelCost+' Ofertas','miss',()=>levelPlayerPoint(id,i),G.of<levelCost);}
       if(c.type==='congregacao'&&c.members>=300&&!c.secondPastorId)addBtn(body,'Enviar segundo pastor — '+(c.city||'Igreja '+(i+1)),G.availablePastors.length?'Custo: '+PASTOR_SEND_COST+' Ofertas':'Aguardando pastor disponível','miss',()=>showSecondPastorModal(id,i,false),!G.availablePastors.length||G.of<PASTOR_SEND_COST);
     });
     addT(body,'Produção deste Estado');
@@ -1603,7 +1659,7 @@ function resumeFromEvent(){document.getElementById('modal').classList.remove('sh
 function updateRes(){
   document.getElementById('r-fe').textContent=Math.floor(G.fe);document.getElementById('r-of').textContent=Math.floor(G.of);document.getElementById('r-fi').textContent=Math.floor(G.fi);
   const rrFe=document.getElementById('rr-fe'), rrOf=document.getElementById('rr-of'), rrFi=document.getElementById('rr-fi');
-  rrFe.textContent=fmtRate(G.rateFe,2)+'/mês';rrOf.textContent=fmtRate(G.rateOf,2)+'/mês';rrFi.textContent=fmtRate(G.rateFi,3)+'/mês';
+  rrFe.textContent=fmtRate(G.rateFe,2)+'/mês';rrOf.textContent=fmtRate(G.rateOf,2)+'/mês';rrFi.textContent=fmtRate(G.rateFi,2)+'/mês';
   rrFe.style.color=G.rateFe<0?'#c62828':'#2a7a2a';rrOf.style.color=G.rateOf<0?'#c62828':'#2a7a2a';rrFi.style.color=G.rateFi<0?'#c62828':'#2a7a2a';
   G.doc=Math.max(0,Math.min(100,G.doc));document.getElementById('doc-fill').style.width=G.doc+'%';document.getElementById('doc-pct').textContent=Math.floor(G.doc)+'%';
   document.getElementById('datebox').textContent=MONTHS[G.month]+' '+G.year;document.getElementById('yeardisp').textContent=G.year;
@@ -1620,7 +1676,10 @@ const MONTH_SECS=1;
 function loop(now){
   if(!G.paused){
     const dt=Math.min((now-lastT)/1000,0.15)*G.speed;
-    G.fe=Math.min(G.fe+G.rateFe*dt,9999);G.of=Math.min(G.of+G.rateOf*dt,9999);G.fi=Math.min(G.fi+G.rateFi*dt,9999);
+    G.fe=Math.min(G.fe+G.rateFe*dt,9999);G.of=Math.min(G.of+G.rateOf*dt,9999);
+    const memberGain=G.rateFi*dt;
+    G.fi=Math.max(0,Math.min(G.fi+memberGain,9999));
+    applyOrganicMemberGrowth(dt);
     let rd=false;
     ALL_STATES.forEach(id=>{
       const st=G.states[id];
