@@ -885,7 +885,8 @@ function churchesNeedingAnnualDecision(){
   const total=totalChurches('IELB');
   const list=[];
   ALL_STATES.forEach(id=>G.states[id].denomData.IELB.churches.forEach((ch,i)=>{
-    if((ch.struggleMonths||0)>=6&&!ch.subsidized&&total>1)list.push({stateId:id,index:i,ch,reason:'deficit'});
+    if(ch.type==='congregacao'&&ch.members>=300&&!ch.secondPastorId&&ch.lastSecondPastorDecisionYear!==G.year)list.push({stateId:id,index:i,ch,reason:'secondPastor'});
+    else if((ch.struggleMonths||0)>=6&&!ch.subsidized&&total>1)list.push({stateId:id,index:i,ch,reason:'deficit'});
     else if((ch.stagnantMonths||0)>=12&&total>1&&ch.lastStagnationDecisionYear!==G.year)list.push({stateId:id,index:i,ch,reason:'stagnant'});
   }));
   return list;
@@ -1309,8 +1310,8 @@ function renderRight(){
         +(c.struggleMonths>=3?'<span style="font-size:11px;color:#c62828">Dificuldade há '+c.struggleMonths+' meses</span>':'');
       body.appendChild(row);
       if(!pastorForChurch(id,i)&&G.availablePastors.length)addBtn(body,'Enviar pastor — '+(c.city||'Igreja '+(i+1)),'Custo: '+PASTOR_SEND_COST+' Ofertas','miss',()=>assignAvailablePastorAction(id,i),G.of<PASTOR_SEND_COST);
-      if(c.level<5){const levelCost=c.type==='missao'?Math.round(c.level*28):Math.round(c.level*55);addBtn(body,'Elevar nível — '+(c.city||'Ponto '+(i+1)),'Nível '+c.level+' → '+(c.level+1)+' | Custo: '+levelCost+' Ofertas','miss',()=>levelPlayerPoint(id,i),G.of<levelCost);}
-      if(c.members>=300&&!c.secondPastorId&&G.availablePastors.length)addBtn(body,'Enviar segundo pastor — '+(c.city||'Igreja '+(i+1)),'Custo: '+PASTOR_SEND_COST+' Ofertas','miss',()=>assignAvailablePastorAction(id,i,true),G.of<PASTOR_SEND_COST);
+      if(c.level<5){const levelCost=c.type==='missao'?Math.round(c.level*28):Math.round(c.level*55);const levelLabel=c.type==='missao'?'Elevar nível da missão':'Fortalecer congregação';addBtn(body,levelLabel+' — '+(c.city||'Ponto '+(i+1)),'Nível '+c.level+' → '+(c.level+1)+' | Custo: '+levelCost+' Ofertas','miss',()=>levelPlayerPoint(id,i),G.of<levelCost);}
+      if(c.type==='congregacao'&&c.members>=300&&!c.secondPastorId)addBtn(body,'Enviar segundo pastor — '+(c.city||'Igreja '+(i+1)),G.availablePastors.length?'Custo: '+PASTOR_SEND_COST+' Ofertas':'Aguardando pastor disponível','miss',()=>showSecondPastorModal(id,i,false),!G.availablePastors.length||G.of<PASTOR_SEND_COST);
     });
     addT(body,'Produção deste Estado');
     const mul=STATE_MULTI[id]||{fe:1,of:1};const tf=ielbC.reduce((a,c)=>a+c.members,0);
@@ -1489,7 +1490,32 @@ function showSubsidyModal(ev){
   modal.classList.add('show');
 }
 
+function showSecondPastorModal(stateId,index,fromAnnual=false){
+  const ch=G.states[stateId].denomData.IELB.churches[index];
+  if(!ch)return;
+  G.paused=true;document.getElementById('pausebtn').textContent='▶ Retomar';
+  const modal=document.getElementById('modal');
+  const tag=document.getElementById('m-tag');tag.textContent='PASTORADO';tag.className='warn';
+  document.getElementById('m-title').textContent='Segundo pastor necessário';
+  document.getElementById('m-yr').textContent=(ch.city||STATES[stateId].name)+' — '+Math.floor(ch.members)+' membros';
+  document.getElementById('m-txt').textContent='Esta congregação passou de 300 membros e já está pesada demais para apenas um pastor. Enviar um segundo pastor reduz a sobrecarga pastoral.';
+  const ref=document.getElementById('m-ref');ref.style.display='block';
+  const p=availablePastor();
+  ref.textContent=p?'Pastor disponível: '+p.name+' | Custo: '+PASTOR_SEND_COST+' Ofertas':'Nenhum pastor disponível agora. Você pode pular e voltar quando houver formatura.';
+  const mc=document.getElementById('m-choices');mc.innerHTML='';
+  if(p){
+    const send=document.createElement('button');send.className='mcbtn';send.textContent='Enviar segundo pastor';send.disabled=G.of<PASTOR_SEND_COST;
+    send.onclick=()=>{assignAvailablePastorAction(stateId,index,true);ch.lastSecondPastorDecisionYear=G.year;closeDecisionModal('Segundo pastor enviado para '+(ch.city||STATES[stateId].name)+'.');};
+    mc.appendChild(send);
+  }
+  const skip=document.createElement('button');skip.className='mcbtn';skip.textContent=fromAnnual?'Pular por enquanto':'Cancelar';
+  skip.onclick=()=>{ch.lastSecondPastorDecisionYear=G.year;closeDecisionModal(fromAnnual?'A decisão foi adiada. A necessidade volta no próximo relatório anual se continuar sem segundo pastor.':'Nenhum pastor foi enviado agora.');};
+  mc.appendChild(skip);
+  modal.classList.add('show');
+}
+
 function showChurchDecision(item){
+  if(item.reason==='secondPastor')return showSecondPastorModal(item.stateId,item.index,true);
   G.paused=true;document.getElementById('pausebtn').textContent='▶ Retomar';
   const modal=document.getElementById('modal');
   const tag=document.getElementById('m-tag');tag.textContent='GESTÃO';tag.className='warn';
