@@ -1,5 +1,13 @@
 (function () {
-  const mode = window.__MUSIC_MODE__;
+  function detectMode() {
+    if (window.__MUSIC_MODE__) return window.__MUSIC_MODE__;
+    const path = window.location.pathname;
+    if (path === '/login' || path === '/register') return 'login';
+    if (path === '/game') return 'game';
+    return '';
+  }
+
+  const mode = detectMode();
   if (!mode) return;
 
   const playlists = {
@@ -71,6 +79,7 @@
   }
 
   function addButton() {
+    if (document.getElementById('music-toggle')) return;
     const btn = document.createElement('button');
     btn.id = 'music-toggle';
     btn.type = 'button';
