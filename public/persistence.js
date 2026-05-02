@@ -75,5 +75,13 @@
     });
   }
 
+  function loadBalancePatch() {
+    const script = document.createElement('script');
+    script.src = '/assets/balance-patch.js';
+    script.defer = true;
+    document.body.appendChild(script);
+  }
+
+  window.addEventListener('load', loadBalancePatch, { once: true });
   window.CultivandoPersistence = { loadInto, start, save };
 })();
