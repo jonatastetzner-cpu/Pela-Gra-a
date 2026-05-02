@@ -8,7 +8,8 @@
       '/assets/audio/game-1.mp3',
       '/assets/audio/game-2.mp3',
       '/assets/audio/game-3.mp3',
-      '/assets/audio/game-4.mp3'
+      '/assets/audio/game-4.mp3',
+      '/assets/audio/game-5.mp3'
     ]
   };
 
