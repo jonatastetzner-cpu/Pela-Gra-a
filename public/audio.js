@@ -10,6 +10,82 @@
   const mode = detectMode();
   if (!mode) return;
 
+  function stateScore(state) {
+    if (!state || typeof state !== 'object') return 0;
+    const year = Number(state.year) || 1904;
+    const month = Number(state.month) || 0;
+    let churches = 0;
+    if (state.states) {
+      Object.keys(state.states).forEach(function (id) {
+        const slot = state.states[id] && state.states[id].denomData && state.states[id].denomData.IELB;
+        churches += slot && Array.isArray(slot.churches) ? slot.churches.length : 0;
+      });
+    }
+    return year * 12 + month + churches / 100;
+  }
+
+  function installSaveBackup() {
+    if (mode !== 'game' || !window.__SAVE_ID__ || window.__saveBackupInstalled) return;
+    window.__saveBackupInstalled = true;
+    const saveKey = 'pela-graca-save-backup-' + window.__SAVE_ID__;
+    const originalFetch = window.fetch.bind(window);
+
+    function readBackup() {
+      try { return JSON.parse(localStorage.getItem(saveKey) || 'null'); } catch (error) { return null; }
+    }
+
+    function writeBackup(state) {
+      if (!state) return;
+      const current = readBackup();
+      if (!current || stateScore(state) >= stateScore(current.state)) {
+        localStorage.setItem(saveKey, JSON.stringify({ state: state, savedAt: new Date().toISOString() }));
+      }
+    }
+
+    function isSaveUrl(input) {
+      const url = typeof input === 'string' ? input : (input && input.url) || '';
+      return url.indexOf('/api/saves/' + window.__SAVE_ID__) !== -1;
+    }
+
+    window.fetch = async function (input, options) {
+      const init = options || {};
+      const method = String(init.method || (input && input.method) || 'GET').toUpperCase();
+      if (!isSaveUrl(input)) return originalFetch(input, options);
+
+      if ((method === 'PUT' || method === 'POST') && init.body) {
+        try {
+          const payload = JSON.parse(init.body);
+          const backup = readBackup();
+          if (payload && payload.state && backup && stateScore(backup.state) > stateScore(payload.state)) {
+            init.body = JSON.stringify({ state: backup.state });
+          } else if (payload && payload.state) {
+            writeBackup(payload.state);
+          }
+        } catch (error) {}
+        return originalFetch(input, init);
+      }
+
+      const response = await originalFetch(input, options);
+      if (method !== 'GET') return response;
+
+      try {
+        const clone = response.clone();
+        const payload = await clone.json();
+        const backup = readBackup();
+        if (payload && payload.state) writeBackup(payload.state);
+        if (backup && (!payload.state || stateScore(backup.state) > stateScore(payload.state))) {
+          payload.state = backup.state;
+          return new Response(JSON.stringify(payload), {
+            status: response.status,
+            statusText: response.statusText,
+            headers: { 'Content-Type': 'application/json; charset=utf-8' }
+          });
+        }
+      } catch (error) {}
+      return response;
+    };
+  }
+
   function suppressOriginalGameScript() {
     if (mode !== 'game') return;
     const removeOldGame = function () {
@@ -25,6 +101,7 @@
     }
   }
 
+  installSaveBackup();
   suppressOriginalGameScript();
 
   const playlists = {
