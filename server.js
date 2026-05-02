@@ -9,11 +9,22 @@ const PUBLIC_DIR = path.join(ROOT, 'public');
 const DB_PATH = path.join(ROOT, 'data', 'cultivando.sqlite');
 const PORT = Number(process.env.PORT || 3000);
 const COOKIE_NAME = 'cultivando_session';
+const GAME_VERSION = 'v1.4';
+
+const STATE_NAMES = {
+  AC: 'Acre', AL: 'Alagoas', AP: 'Amapa', AM: 'Amazonas', BA: 'Bahia', CE: 'Ceara', DF: 'Distrito Federal', ES: 'Espirito Santo', GO: 'Goias',
+  MA: 'Maranhao', MT: 'Mato Grosso', MS: 'Mato Grosso do Sul', MG: 'Minas Gerais', PA: 'Para', PB: 'Paraiba', PR: 'Parana', PE: 'Pernambuco',
+  PI: 'Piaui', RJ: 'Rio de Janeiro', RN: 'Rio Grande do Norte', RS: 'Rio Grande do Sul', RO: 'Rondonia', RR: 'Roraima', SC: 'Santa Catarina',
+  SP: 'Sao Paulo', SE: 'Sergipe', TO: 'Tocantins'
+};
+const STATE_ORDER = Object.keys(STATE_NAMES);
 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 const db = new DatabaseSync(DB_PATH);
 db.exec(`
+  PRAGMA foreign_keys = ON;
+
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -40,6 +51,23 @@ db.exec(`
     UNIQUE (user_id, slot),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS rankings (
+    save_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    user_name TEXT NOT NULL,
+    save_name TEXT NOT NULL,
+    year INTEGER NOT NULL,
+    month INTEGER NOT NULL,
+    total_churches INTEGER NOT NULL,
+    total_members REAL NOT NULL,
+    doctrine_correct INTEGER NOT NULL,
+    reached_final INTEGER NOT NULL,
+    state_churches_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (save_id) REFERENCES saves(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
 `);
 
 const getUserByName = db.prepare('SELECT * FROM users WHERE name = ? COLLATE NOCASE');
@@ -54,6 +82,29 @@ const getSaveSlot = db.prepare('SELECT * FROM saves WHERE user_id = ? AND slot =
 const insertSave = db.prepare('INSERT INTO saves (id, user_id, slot, name, state_json, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?)');
 const updateSaveState = db.prepare('UPDATE saves SET state_json = ?, updated_at = ? WHERE id = ? AND user_id = ?');
 const deleteSave = db.prepare('DELETE FROM saves WHERE id = ? AND user_id = ?');
+const deleteRanking = db.prepare('DELETE FROM rankings WHERE save_id = ?');
+const upsertRanking = db.prepare(`
+  INSERT INTO rankings (save_id, user_id, user_name, save_name, year, month, total_churches, total_members, doctrine_correct, reached_final, state_churches_json, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(save_id) DO UPDATE SET
+    user_name = excluded.user_name,
+    save_name = excluded.save_name,
+    year = excluded.year,
+    month = excluded.month,
+    total_churches = excluded.total_churches,
+    total_members = excluded.total_members,
+    doctrine_correct = excluded.doctrine_correct,
+    reached_final = excluded.reached_final,
+    state_churches_json = excluded.state_churches_json,
+    updated_at = excluded.updated_at
+`);
+const getAllSavedStates = db.prepare(`
+  SELECT saves.*, users.name AS user_name
+  FROM saves
+  JOIN users ON users.id = saves.user_id
+  WHERE saves.state_json IS NOT NULL
+`);
+const getRankingRows = db.prepare('SELECT * FROM rankings ORDER BY updated_at DESC');
 
 function hashPin(pin, salt) {
   return crypto.createHash('sha256').update(`${salt}:${pin}`).digest('hex');
@@ -164,6 +215,136 @@ function renderAuth(mode, error = '') {
 </main>`);
 }
 
+function safeJsonParse(raw, fallback = null) {
+  try {
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function churchCountForState(stateData) {
+  return stateData?.denomData?.IELB?.churches?.length || 0;
+}
+
+function memberCountForState(stateData) {
+  const slot = stateData?.denomData?.IELB;
+  if (!slot) return 0;
+  if (Number.isFinite(Number(slot.members))) return Number(slot.members);
+  return (slot.churches || []).reduce((sum, church) => sum + Math.max(0, Number(church.members) || 0), 0);
+}
+
+function extractRankingStats(state) {
+  const states = state?.states || {};
+  const stateChurches = {};
+  let totalChurches = 0;
+  let totalMembers = 0;
+
+  STATE_ORDER.forEach(code => {
+    const count = churchCountForState(states[code]);
+    if (count > 0) stateChurches[code] = count;
+    totalChurches += count;
+    totalMembers += memberCountForState(states[code]);
+  });
+
+  const year = Math.max(1904, Math.floor(Number(state?.year) || 1904));
+  const month = Math.max(0, Math.min(11, Math.floor(Number(state?.month) || 0)));
+  const doctrineCorrect = Math.max(0, Math.floor(Number(state?.doctrineCorrectCount || state?.doctrineStats?.correct || 0)));
+
+  return {
+    year,
+    month,
+    totalChurches,
+    totalMembers,
+    doctrineCorrect,
+    reachedFinal: year >= 2026 ? 1 : 0,
+    stateChurches
+  };
+}
+
+function updateRankingForSave(save, userName, state) {
+  if (!state) {
+    deleteRanking.run(save.id);
+    return;
+  }
+  const stats = extractRankingStats(state);
+  upsertRanking.run(
+    save.id,
+    save.user_id,
+    userName,
+    save.name,
+    stats.year,
+    stats.month,
+    stats.totalChurches,
+    stats.totalMembers,
+    stats.doctrineCorrect,
+    stats.reachedFinal,
+    JSON.stringify(stats.stateChurches),
+    new Date().toISOString()
+  );
+}
+
+function backfillRankings() {
+  getAllSavedStates.all().forEach(save => {
+    updateRankingForSave(save, save.user_name, safeJsonParse(save.state_json));
+  });
+}
+
+function publicRankingRow(row) {
+  return {
+    player: row.user_name,
+    story: row.save_name,
+    year: row.year,
+    month: row.month,
+    totalChurches: row.total_churches,
+    totalMembers: Math.floor(row.total_members),
+    doctrineCorrect: row.doctrine_correct,
+    reachedFinal: Boolean(row.reached_final),
+    updatedAt: row.updated_at
+  };
+}
+
+function rankingPayload() {
+  backfillRankings();
+  const rows = getRankingRows.all();
+  const byYear = [...rows]
+    .sort((a, b) => b.year - a.year || b.month - a.month || b.total_churches - a.total_churches)
+    .slice(0, 10)
+    .map(publicRankingRow);
+  const byChurches = [...rows]
+    .sort((a, b) => b.total_churches - a.total_churches || b.reached_final - a.reached_final || b.year - a.year)
+    .slice(0, 10)
+    .map(publicRankingRow);
+  const byDoctrine = [...rows]
+    .sort((a, b) => b.doctrine_correct - a.doctrine_correct || b.year - a.year || b.total_churches - a.total_churches)
+    .slice(0, 10)
+    .map(publicRankingRow);
+
+  const byState = STATE_ORDER.map(code => {
+    const best = rows
+      .map(row => ({ row, count: Number(safeJsonParse(row.state_churches_json, {})[code] || 0) }))
+      .filter(item => item.count > 0)
+      .sort((a, b) => b.count - a.count || b.row.year - a.row.year || b.row.total_churches - a.row.total_churches)[0];
+    return best ? {
+      state: code,
+      stateName: STATE_NAMES[code],
+      churches: best.count,
+      ...publicRankingRow(best.row)
+    } : {
+      state: code,
+      stateName: STATE_NAMES[code],
+      churches: 0,
+      player: '-',
+      story: '-',
+      year: 1904,
+      totalChurches: 0,
+      doctrineCorrect: 0
+    };
+  });
+
+  return { generatedAt: new Date().toISOString(), byYear, byChurches, byState, byDoctrine };
+}
+
 function renderDashboard(user, error = '') {
   const saves = new Map(getSavesByUser.all(user.id).map(save => [save.slot, save]));
   const slots = [1, 2].map(slot => {
@@ -199,7 +380,10 @@ function renderDashboard(user, error = '') {
       <h1>Minhas histórias</h1>
       <p>Jogador: ${escapeHtml(user.name)}</p>
     </div>
-    <form method="POST" action="/logout"><button>Sair</button></form>
+    <nav class="dash-actions">
+      <a class="primary" href="/ranking">Ranking</a>
+      <form method="POST" action="/logout"><button>Sair</button></form>
+    </nav>
   </header>
   ${error ? `<div class="form-error">${escapeHtml(error)}</div>` : ''}
   <div class="slot-grid">${slots}</div>
@@ -226,7 +410,8 @@ function renderNewSave(user, slot, error = '') {
 }
 
 function renderGame(save, user) {
-  const body = fs.readFileSync(path.join(PUBLIC_DIR, 'game-body.html'), 'utf8');
+  const body = fs.readFileSync(path.join(PUBLIC_DIR, 'game-body.html'), 'utf8')
+    .replace(/id="version-tag">v[0-9.]+<\/span>/, `id="version-tag">${GAME_VERSION}</span>`);
   return `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -243,6 +428,7 @@ window.__SAVE_NAME__ = ${JSON.stringify(save.name)};
 <body>
 <div id="campaign-bar">
   <a href="/" class="bar-link">← Histórias</a>
+  <a href="/ranking" class="bar-link">Ranking</a>
   <strong>${escapeHtml(save.name)}</strong>
   <span>${escapeHtml(user.name)}</span>
   <span id="save-status">Salvando no SQLite...</span>
@@ -252,6 +438,52 @@ ${body}
 <script src="/assets/game.js"></script>
 </body>
 </html>`;
+}
+
+function renderRankingPage(user) {
+  return pageShell('Ranking', `
+<main class="ranking-page">
+  <style>
+    .ranking-page{max-width:1180px;margin:0 auto;padding:28px 16px 44px;color:#2b2114}.ranking-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:18px}.ranking-head h1{margin:0 0 6px;font-size:28px}.ranking-head p{margin:0;color:#6d604c}.ranking-back{display:inline-flex;align-items:center;border:1px solid #b79250;color:#5c3700;text-decoration:none;padding:8px 12px;background:#fff8ea;font-weight:700}.ranking-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.ranking-card{border:1px solid #d7c29b;background:#fffdf8;border-radius:6px;overflow:hidden}.ranking-card h2{font-size:14px;letter-spacing:.08em;text-transform:uppercase;margin:0;padding:12px 14px;border-bottom:1px solid #ead8b4;color:#805200}.ranking-list{display:grid}.ranking-row{display:grid;grid-template-columns:32px 1fr auto;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid #f0e5cf}.ranking-row:last-child{border-bottom:0}.ranking-pos{font-weight:800;color:#9d6a16}.ranking-name{font-weight:800}.ranking-meta{font-size:12px;color:#7a6a55}.ranking-score{font-weight:900;color:#1b5e20;text-align:right}.state-board{margin-top:14px}.state-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0}.state-item{display:grid;grid-template-columns:44px 1fr auto;gap:10px;align-items:center;padding:9px 12px;border-bottom:1px solid #f0e5cf}.state-code{font-weight:900;color:#805200}.ranking-updated{font-size:12px;color:#7a6a55;margin-top:12px}@media(max-width:900px){.ranking-grid{grid-template-columns:1fr}.state-grid{grid-template-columns:1fr}.ranking-head{display:block}.ranking-back{margin-top:12px}}
+  </style>
+  <header class="ranking-head">
+    <div>
+      <h1>Ranking dos cadastrados</h1>
+      <p>Atualiza sozinho enquanto os jogadores salvam suas campanhas.</p>
+      <p>Jogador: ${escapeHtml(user.name)}</p>
+    </div>
+    <a class="ranking-back" href="/">Voltar</a>
+  </header>
+  <section class="ranking-grid">
+    <div class="ranking-card"><h2>Mais anos jogados</h2><div id="rank-years" class="ranking-list"></div></div>
+    <div class="ranking-card"><h2>Mais igrejas ate 2026</h2><div id="rank-churches" class="ranking-list"></div></div>
+    <div class="ranking-card"><h2>Mais acertos doutrinarios</h2><div id="rank-doctrine" class="ranking-list"></div></div>
+  </section>
+  <section class="ranking-card state-board">
+    <h2>Recorde de igrejas por estado</h2>
+    <div id="rank-states" class="state-grid"></div>
+  </section>
+  <div id="ranking-updated" class="ranking-updated"></div>
+  <script>
+    const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    function row(item, index, score, suffix = '') {
+      return '<div class="ranking-row"><div class="ranking-pos">'+(index+1)+'</div><div><div class="ranking-name">'+esc(item.player)+'</div><div class="ranking-meta">'+esc(item.story)+' · ano '+esc(item.year)+(item.reachedFinal?' · finalista':'')+'</div></div><div class="ranking-score">'+esc(score)+suffix+'</div></div>';
+    }
+    function emptyRow(text) { return '<div class="ranking-row"><div></div><div class="ranking-meta">'+esc(text)+'</div><div></div></div>'; }
+    async function loadRanking() {
+      const response = await fetch('/api/ranking', { cache: 'no-store' });
+      if (!response.ok) return;
+      const data = await response.json();
+      document.getElementById('rank-years').innerHTML = data.byYear.length ? data.byYear.map((item, index) => row(item, index, item.year)).join('') : emptyRow('Sem campanhas salvas ainda.');
+      document.getElementById('rank-churches').innerHTML = data.byChurches.length ? data.byChurches.map((item, index) => row(item, index, item.totalChurches, ' igrejas')).join('') : emptyRow('Sem igrejas registradas ainda.');
+      document.getElementById('rank-doctrine').innerHTML = data.byDoctrine.length ? data.byDoctrine.map((item, index) => row(item, index, item.doctrineCorrect, ' acertos')).join('') : emptyRow('Os acertos passam a contar na versao '+${JSON.stringify(GAME_VERSION)}+'.');
+      document.getElementById('rank-states').innerHTML = data.byState.map(item => '<div class="state-item"><div class="state-code">'+esc(item.state)+'</div><div><div class="ranking-name">'+esc(item.stateName)+'</div><div class="ranking-meta">'+esc(item.player)+' · '+esc(item.story)+'</div></div><div class="ranking-score">'+esc(item.churches)+'</div></div>').join('');
+      document.getElementById('ranking-updated').textContent = 'Atualizado em ' + new Date(data.generatedAt).toLocaleString('pt-BR');
+    }
+    loadRanking();
+    setInterval(loadRanking, 5000);
+  </script>
+</main>`);
 }
 
 function serveAsset(req, res) {
@@ -274,7 +506,8 @@ function serveAsset(req, res) {
   const ext = path.extname(filePath);
   const type = ext === '.css' ? 'text/css; charset=utf-8'
     : ext === '.js' ? 'text/javascript; charset=utf-8'
-      : 'application/octet-stream';
+      : ext === '.html' ? 'text/html; charset=utf-8'
+        : 'application/octet-stream';
   res.writeHead(200, { 'Content-Type': type });
   fs.createReadStream(filePath).pipe(res);
 }
@@ -347,6 +580,11 @@ async function handleApi(req, res, url, user) {
     return;
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/ranking') {
+    json(res, 200, rankingPayload());
+    return;
+  }
+
   const match = url.pathname.match(/^\/api\/saves\/([^/]+)$/);
   if (!match) {
     json(res, 404, { error: 'API não encontrada' });
@@ -365,14 +603,17 @@ async function handleApi(req, res, url, user) {
       id: save.id,
       name: save.name,
       slot: save.slot,
-      state: save.state_json ? JSON.parse(save.state_json) : null
+      state: safeJsonParse(save.state_json)
     });
     return;
   }
 
   if (req.method === 'PUT' || req.method === 'POST') {
-    const payload = JSON.parse(await readBody(req) || '{}');
-    updateSaveState.run(JSON.stringify(payload.state || null), new Date().toISOString(), id, user.id);
+    const payload = safeJsonParse(await readBody(req) || '{}', {});
+    const state = payload?.state || null;
+    const now = new Date().toISOString();
+    updateSaveState.run(JSON.stringify(state), now, id, user.id);
+    updateRankingForSave({ ...save, state_json: JSON.stringify(state), updated_at: now }, user.name, state);
     json(res, 200, { ok: true });
     return;
   }
@@ -406,6 +647,12 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(renderDashboard(user));
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/ranking') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(renderRankingPage(user));
       return;
     }
 
@@ -444,6 +691,7 @@ const server = http.createServer(async (req, res) => {
     const deleteMatch = url.pathname.match(/^\/saves\/([^/]+)\/delete$/);
     if (req.method === 'POST' && deleteMatch) {
       deleteSave.run(deleteMatch[1], user.id);
+      deleteRanking.run(deleteMatch[1]);
       redirect(res, '/');
       return;
     }
