@@ -243,6 +243,16 @@ function churchInternalBalance(stateId,index){
     );
 
     source = replaceExact(source,
+      `addBtn(body,'Abrir missão neste estado','Pastor disponível | Custo: '+firstCost+' Ofertas + 10 Membros','miss',()=>newDedicatedChurch(id),G.of<firstCost||G.fi<10||!G.availablePastors.length);`,
+      `addBtn(body,'Abrir missão neste estado','Pastor disponível | Custo: '+MISSION_FAITH_COST+' Fé + '+MISSION_MEMBER_COST+' membros','miss',()=>newDedicatedChurch(id),G.fe<MISSION_FAITH_COST||!canSpendIelbChurchMembers(MISSION_MEMBER_COST)||!G.availablePastors.length);`
+    );
+
+    source = replaceExact(source,
+      `addBtn(body,'Abrir mais um ponto de missão no estado','Custo: '+cost+' Ofertas + 10 Membros','miss',()=>openMission(id),G.of<cost||G.fi<10||!canOpenMission);`,
+      `addBtn(body,'Abrir mais um ponto de missão no estado','Custo: '+MISSION_FAITH_COST+' Fé + '+MISSION_MEMBER_COST+' membros','miss',()=>openMission(id),G.fe<MISSION_FAITH_COST||!canSpendIelbChurchMembers(MISSION_MEMBER_COST)||!canOpenMission);`
+    );
+
+    source = replaceExact(source,
       `function addMembersToIelbChurches(amount,preferStateId=null){\n  const refs=ielbChurchRefs();\n  if(!refs.length||amount<=0)return null;\n  const pool=preferStateId?refs.filter(r=>r.id===preferStateId):refs;\n  const chosenPool=pool.length?pool:refs;\n  const share=amount/chosenPool.length;\n  let last=null;\n  chosenPool.forEach(r=>{\n    r.ch.members+=share;\n    r.ch.stagnantMonths=0;\n    r.ch._stagnationWindowStart=r.ch.members;\n    r.ch._stagnationMonths=0;\n    syncDenomMembers(r.id,'IELB');\n    last=r;\n  });\n  return last;\n}`,
       `function addMembersToIelbChurches(amount,preferStateId=null){\n  const refs=ielbChurchRefs();\n  if(!refs.length||amount<=0)return null;\n  const pool=preferStateId?refs.filter(r=>r.id===preferStateId):refs;\n  const chosenPool=pool.length?pool:refs;\n  const share=amount/chosenPool.length;\n  let last=null;\n  chosenPool.forEach(r=>{\n    r.ch.members+=share;\n    r.ch.stagnantMonths=0;\n    r.ch._stagnationWindowStart=r.ch.members;\n    r.ch._stagnationMonths=0;\n    syncDenomMembers(r.id,'IELB');\n    last=r;\n  });\n  return last;\n}\nfunction ielbSpendableMembers(){return ielbChurchRefs().reduce((sum,r)=>sum+Math.max(0,(r.ch.members||0)-1),0);}\nfunction canSpendIelbChurchMembers(amount){return amount>0&&ielbSpendableMembers()>=amount;}\nfunction spendIelbChurchMembers(amount){\n  let remaining=amount;\n  while(remaining>0.0001){\n    const refs=ielbChurchRefs().filter(r=>(r.ch.members||0)>1.0001);\n    if(!refs.length)break;\n    const share=remaining/refs.length;\n    let spent=0;\n    refs.forEach(r=>{\n      const take=Math.min(Math.max(0,(r.ch.members||0)-1),share);\n      r.ch.members-=take;\n      spent+=take;\n    });\n    if(spent<=0)break;\n    remaining-=spent;\n  }\n  G.fi=Math.max(0,G.fi-(amount-remaining));\n  ALL_STATES.forEach(id=>syncDenomMembers(id,'IELB'));\n  return amount-remaining;\n}`
     );
