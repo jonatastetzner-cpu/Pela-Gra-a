@@ -136,8 +136,24 @@
     }
   }
 
+  function loadGameHotfix() {
+    if (mode !== 'game') return;
+    let attempts = 0;
+    const timer = setInterval(function () {
+      attempts += 1;
+      if (window.__pelaGracaMissionCostHotfix) { clearInterval(timer); return; }
+      if (typeof window.renderRight !== 'function' && typeof renderRight === 'undefined' && attempts < 80) return;
+      clearInterval(timer);
+      const script = document.createElement('script');
+      script.src = '/assets/game-hotfix.js?v=21f2b5b';
+      script.dataset.patchedGame = '1';
+      document.body.appendChild(script);
+    }, 250);
+  }
+
   installSaveBackup();
   suppressOriginalGameScript();
+  loadGameHotfix();
 
   const playlists = {
     login: ['/assets/audio/login.mp3', '/assets/audio/login.ogg'],
